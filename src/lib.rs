@@ -80,25 +80,6 @@ struct UserInfo {
     expires: u64,
 }
 
-// impl From for UserInfo {
-//     fn from(self, user: Address, expires: u64) -> Self {
-//         UserInfo { user, expires }
-//     }
-// }
-
-impl UserInfo {
-    // fn empty(state_builder: &mut StateBuilder<S>) -> Self {
-    //     UserInfo {
-    //         user: state_builder.new_set(),
-    //         expires: state_builder.new_set(),
-    //     }
-    // }
-
-    fn create(user: Address, expires: u64) -> Self {
-        UserInfo { user, expires }
-    }
-}
-
 /// The contract state.
 // Note: The specification does not specify how to structure the contract state
 // and this could be structured in a more space efficient way depending on the use case.
@@ -338,11 +319,13 @@ impl<S: HasStateApi> State<S> {
     ) -> ContractResult<()> {
         ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
 
-        let token_owner: AddressState<S> = self.state.get(from)?;
-        ensure!(
-            token_owner.owned_tokens.contains(token_id),
-            ContractError::Unauthorized
-        );
+        let is_token_owner: bool = self
+            .state
+            .get(from)
+            .map(|address_state| address_state.owned_tokens.contains(token_id))
+            .unwrap_or(false);
+
+        ensure!(is_token_owner, ContractError::Unauthorized);
 
         self.user_infos
             .insert(*token_id, UserInfo { user: *user, expires: *expires });
@@ -770,6 +753,12 @@ struct SetUserParams {
     expires: u64,
 }
 
+// impl From for SetUserParams {
+//     fn from(token_id: TokenIdU32, user: Address, expires: u64) -> Self {
+//         SetUserParams { token_id, user, expires }
+//     }
+// }
+
 #[receive(
     contract = "cis2_rentable_nft",
     name = "setUser",
@@ -782,11 +771,7 @@ fn contract_set_user<S: HasStateApi>(
     host: &mut impl HasHost<State<S>, StateApiType = S>,
 ) -> ContractResult<()> {
     let sender = ctx.sender();
-    // // Authorize the sender.
-    // ensure!(
-    //     ctx.sender().matches_account(&ctx.owner()),
-    //     ContractError::Unauthorized
-    // );
+
     // Parse the parameter.
     let params: SetUserParams = ctx.parameter_cursor().get()?;
     // Update the user_infos in the state
@@ -968,6 +953,85 @@ mod tests {
                 }
             ))),
             "Expected an event for token metadata for TOKEN_1"
+        );
+    }
+
+    #[concordium_test]
+    fn test_set_user() {
+        // Setup the context
+        let mut ctx = TestReceiveContext::empty();
+        ctx.set_sender(ADDRESS_0);
+
+        let parameter = SetUserParams {
+            token_id: TOKEN_0,
+            user: ADDRESS_1,
+            expires: 232142342,
+        };
+        let parameter_bytes = to_bytes(&parameter);
+        ctx.set_parameter(&parameter_bytes);
+
+        let mut logger = TestLogger::init();
+        let mut state_builder = TestStateBuilder::new();
+        let state = initial_state(&mut state_builder);
+        let mut host = TestHost::new(state, state_builder);
+
+        // Call the contract function.
+        let result: ContractResult<()> = contract_set_user(&ctx, &mut host);
+        // Check the result.
+        claim!(result.is_ok(), "Results in rejection");
+
+        // Check the state.
+        let (user, expires): (Address, u64) = host
+            .state()
+            .user_infos
+            .get(&TOKEN_0)
+            .map(|address_state| (address_state.user, address_state.expires))
+            .unwrap();
+
+        claim_eq!(user, ADDRESS_1);
+        claim_eq!(expires, 232142342);
+
+        // // Check the logs.
+        // claim_eq!(logger.logs.len(), 1, "Only one event should be logged");
+        // claim_eq!(
+        //     logger.logs[0],
+        //     to_bytes(&Cis2Event::Transfer(TransferEvent {
+        //         from: ADDRESS_0,
+        //         to: ADDRESS_1,
+        //         token_id: TOKEN_0,
+        //         amount: ContractTokenAmount::from(1),
+        //     })),
+        //     "Incorrect event emitted"
+        // )
+    }
+
+    #[concordium_test]
+    fn test_set_user_not_authorized() {
+        // Setup the context
+        let mut ctx = TestReceiveContext::empty();
+        ctx.set_sender(ADDRESS_1);
+
+        let parameter = SetUserParams {
+            token_id: TOKEN_0,
+            user: ADDRESS_0,
+            expires: 232142342,
+        };
+        let parameter_bytes = to_bytes(&parameter);
+        ctx.set_parameter(&parameter_bytes);
+
+        let mut logger = TestLogger::init();
+        let mut state_builder = TestStateBuilder::new();
+        let state = initial_state(&mut state_builder);
+        let mut host = TestHost::new(state, state_builder);
+
+        // Call the contract function.
+        let result: ContractResult<()> = contract_set_user(&ctx, &mut host);
+        // Check the result.
+        let err = result.expect_err_report("Expected to fail");
+        claim_eq!(
+            err,
+            ContractError::Unauthorized,
+            "Error is expected to be Unauthorized"
         );
     }
 
