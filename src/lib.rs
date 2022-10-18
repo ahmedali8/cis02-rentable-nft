@@ -73,7 +73,6 @@ impl<S: HasStateApi> AddressState<S> {
     }
 }
 
-// #[derive(Serial, DeserialWithState, Deletable, StateClone)]
 #[derive(Debug, Serialize, SchemaType)]
 struct UserInfo {
     user: User,
@@ -219,7 +218,7 @@ impl<S: HasStateApi> State<S> {
 
     fn user_of(&self, token_id: &ContractTokenId) -> ContractResult<User> {
         ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
-        let user: User = self
+        let user = self
             .user_infos
             .get(token_id)
             .map(|user_info| user_info.user)
@@ -790,6 +789,42 @@ fn contract_set_implementor<S: HasStateApi>(
     Ok(())
 }
 
+pub const UPDATE_USER_EVENT_TAG: u8 = u8::MAX - 5;
+
+#[derive(Debug)]
+pub enum NftEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
+    UpdateUser(UpdateUserEvent<T, A, U>)
+}
+
+impl<T: IsTokenId, A: IsAddress, U: IsU64> Serial for NftEvent<T, A, U> {
+    fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
+        match self {
+            NftEvent::UpdateUser(event) => {
+                out.write_u8(UPDATE_USER_EVENT_TAG)?;
+                event.serial(out)
+            }
+        }
+    }
+}
+
+impl<T: IsTokenId, A: IsAddress, U: IsU64> Deserial for NftEvent<T, A, U> {
+    fn deserial<R: Read>(source: &mut R) -> ParseResult<Self> {
+        let tag = source.read_u8()?;
+        match tag {
+            UPDATE_USER_EVENT_TAG => UpdateUserEvent::<T, A, U>::deserial(source).map(NftEvent::UpdateUser),
+            _ => Err(ParseError::default()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, SchemaType)]
+pub struct UpdateUserEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
+    /// The ID of the token being transferred.
+    pub token_id: T,
+    pub user: A,
+    pub expires: U, 
+}
+
 #[derive(Debug, Serialize, SchemaType)]
 struct SetUserParams {
     token_id: TokenIdU32,
@@ -802,11 +837,13 @@ struct SetUserParams {
     name = "setUser",
     parameter = "SetUserParams",
     error = "ContractError",
+    enable_logger,
     mutable
 )]
 fn contract_set_user<S: HasStateApi>(
     ctx: &impl HasReceiveContext,
     host: &mut impl HasHost<State<S>, StateApiType = S>,
+    logger: &mut impl HasLogger,
 ) -> ContractResult<()> {
     let sender = ctx.sender();
 
@@ -819,44 +856,18 @@ fn contract_set_user<S: HasStateApi>(
         &params.user,
         &params.expires,
     )?;
+
+    // Log update user event
+    logger.log(&NftEvent::UpdateUser(UpdateUserEvent {
+        token_id: params.token_id,
+        user: params.user,
+        expires: params.expires,
+    }))?;
+
     Ok(())
 }
 
-/// A query for the user of a given address for a given token.
-// Note: For the serialization to be derived according to the CIS2
-// specification, the order of the fields cannot be changed.
-#[derive(Debug, Serialize)]
-pub struct UserOfQuery<T: IsTokenId> {
-    /// The ID of the token for which to query the user of.
-    pub token_id: T,
-}
-
-impl<T: IsTokenId> schema::SchemaType for UserOfQuery<T> {
-    fn get_type() -> schema::Type {
-        schema::Type::Struct(schema::Fields::Named(vec![(
-            "token_id".to_string(),
-            T::get_type(),
-        )]))
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct UserOfQueryParams<T: IsTokenId> {
-    /// List of balance queries.
-    #[concordium(size_length = 2)]
-    pub queries: Vec<UserOfQuery<T>>,
-}
-
-impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
-    fn get_type() -> schema::Type {
-        schema::Type::List(
-            schema::SizeLength::U16,
-            Box::new(UserOfQuery::<T>::get_type()),
-        )
-    }
-}
-
-#[derive(Debug, Serialize, Copy)]
+#[derive(Debug, Serialize, Copy, Clone)]
 pub enum User {
     /// The user is an account address.
     Account(AccountAddress),
@@ -909,6 +920,41 @@ impl From<AccountAddress> for User {
     }
 }
 
+/// A query for the user of a given address for a given token.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
+#[derive(Debug, Serialize)]
+pub struct UserOfQuery<T: IsTokenId> {
+    /// The ID of the token for which to query the user of.
+    pub token_id: T,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserOfQuery<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::Struct(schema::Fields::Named(vec![(
+            "token_id".to_string(),
+            T::get_type(),
+        )]))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserOfQueryParams<T: IsTokenId> {
+    /// List of balance queries.
+    #[concordium(size_length = 2)]
+    pub queries: Vec<UserOfQuery<T>>,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(
+            schema::SizeLength::U16,
+            Box::new(UserOfQuery::<T>::get_type()),
+        )
+    }
+}
+
+
 pub trait IsAddress: Serialize + schema::SchemaType {}
 
 impl IsAddress for User {}
@@ -946,29 +992,125 @@ type ContractUserOfQueryParams = UserOfQueryParams<ContractTokenId>;
 /// of TokenAmounts used by this contract.
 type ContractUserOfQueryResponse = UserOfQueryResponse<User>;
 
-// #[receive(
-//     contract = "cis2_rentable_nft",
-//     name = "userOf",
-//     parameter = "ContractUserOfQueryParams",
-//     return_value = "ContractUserOfQueryResponse",
-//     error = "ContractError"
-// )]
-// fn contract_user_of<S: HasStateApi>(
-//     ctx: &impl HasReceiveContext,
-//     host: &impl HasHost<State<S>, StateApiType = S>,
-// ) -> ContractResult<ContractUserOfQueryResponse> {
-//     // Parse the parameter.
-//     let params: ContractUserOfQueryParams = ctx.parameter_cursor().get()?;
-//     // Build the response.
-//     let mut response = Vec::with_capacity(params.queries.len());
-//     for query in params.queries {
-//         // Query the state for balance.
-//         let amount = host.state().balance(&query.token_id, &query.address)?;
-//         response.push(amount);
-//     }
-//     let result = ContractBalanceOfQueryResponse::from(response);
-//     Ok(result)
-// }
+#[receive(
+    contract = "cis2_rentable_nft",
+    name = "userOf",
+    parameter = "ContractUserOfQueryParams",
+    return_value = "ContractUserOfQueryResponse",
+    error = "ContractError"
+)]
+fn contract_user_of<S: HasStateApi>(
+    ctx: &impl HasReceiveContext,
+    host: &impl HasHost<State<S>, StateApiType = S>,
+) -> ContractResult<ContractUserOfQueryResponse> {
+    // Parse the parameter.
+    let params: ContractUserOfQueryParams = ctx.parameter_cursor().get()?;
+    // Build the response.
+    let mut response: Vec<User> = Vec::with_capacity(params.queries.len());
+    for query in params.queries {
+        // Query the state for balance.
+        let user: User = host.state().user_of(&query.token_id)?;
+        response.push(user);
+    }
+    let result = ContractUserOfQueryResponse::from(response);
+    Ok(result)
+}
+
+
+/// A query for the user of a given address for a given token.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
+#[derive(Debug, Serialize)]
+pub struct UserExpiresQuery<T: IsTokenId> {
+    /// The ID of the token for which to query the user of.
+    pub token_id: T,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserExpiresQuery<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::Struct(schema::Fields::Named(vec![(
+            "token_id".to_string(),
+            T::get_type(),
+        )]))
+    }
+}
+
+pub trait IsU64: Serialize + schema::SchemaType {}
+
+impl IsU64 for u64 {}
+
+#[derive(Debug, Serialize)]
+pub struct UserExpiresQueryParams<T: IsTokenId> {
+    /// List of balance queries.
+    #[concordium(size_length = 2)]
+    pub queries: Vec<UserExpiresQuery<T>>,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserExpiresQueryParams<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(
+            schema::SizeLength::U16,
+            Box::new(UserExpiresQuery::<T>::get_type()),
+        )
+    }
+}
+
+/// The response which is sent back when calling the contract function
+/// `balanceOf`.
+/// It consists of the list of results corresponding to the list of queries.
+#[derive(Debug, Serialize)]
+pub struct UserExpiresQueryResponse<A: IsU64>(
+    #[concordium(size_length = 2)] pub Vec<A>,
+);
+
+impl<A: IsU64> schema::SchemaType for UserExpiresQueryResponse<A> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(schema::SizeLength::U16, Box::new(A::get_type()))
+    }
+}
+
+impl<A: IsU64> From<Vec<A>> for UserExpiresQueryResponse<A> {
+    fn from(results: Vec<A>) -> Self {
+        UserExpiresQueryResponse(results)
+    }
+}
+
+impl<A: IsU64> AsRef<[A]> for UserExpiresQueryResponse<A> {
+    fn as_ref(&self) -> &[A] {
+        &self.0
+    }
+}
+
+/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenIDs used by this contract.
+type ContractUserExpiresQueryParams = UserExpiresQueryParams<ContractTokenId>;
+/// Response type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenAmounts used by this contract.
+type ContractUserExpiresQueryResponse = UserExpiresQueryResponse<u64>;
+
+#[receive(
+    contract = "cis2_rentable_nft",
+    name = "userExpires",
+    parameter = "ContractUserExpiresQueryParams",
+    return_value = "ContractUserExpiresQueryResponse",
+    error = "ContractError"
+)]
+fn contract_user_expires<S: HasStateApi>(
+    ctx: &impl HasReceiveContext,
+    host: &impl HasHost<State<S>, StateApiType = S>,
+) -> ContractResult<ContractUserExpiresQueryResponse> {
+    // Parse the parameter.
+    let params: ContractUserExpiresQueryParams = ctx.parameter_cursor().get()?;
+    // Build the response.
+    let mut response: Vec<u64> = Vec::with_capacity(params.queries.len());
+    for query in params.queries {
+        // Query the state for balance.
+        let expires: u64 = host.state().user_expires(&query.token_id)?;
+        response.push(expires);
+    }
+    let result = ContractUserExpiresQueryResponse::from(response);
+    Ok(result)
+}
 
 // Tests
 
@@ -1150,7 +1292,7 @@ mod tests {
 
         let parameter = SetUserParams {
             token_id: TOKEN_0,
-            user: ADDRESS_1,
+            user: User::from_account(ACCOUNT_1),
             expires: 232142342,
         };
         let parameter_bytes = to_bytes(&parameter);
@@ -1162,33 +1304,33 @@ mod tests {
         let mut host = TestHost::new(state, state_builder);
 
         // Call the contract function.
-        let result: ContractResult<()> = contract_set_user(&ctx, &mut host);
+        let result: ContractResult<()> = contract_set_user(&ctx, &mut host, &mut logger);
         // Check the result.
         claim!(result.is_ok(), "Results in rejection");
 
         // Check the state.
-        let (user, expires): (Address, u64) = host
+        let (user, expires) = host
             .state()
             .user_infos
             .get(&TOKEN_0)
             .map(|address_state| (address_state.user, address_state.expires))
             .unwrap();
 
-        claim_eq!(user, ADDRESS_1);
+        claim_eq!(user.address(), ADDRESS_1);
         claim_eq!(expires, 232142342);
 
-        // // Check the logs.
-        // claim_eq!(logger.logs.len(), 1, "Only one event should be logged");
-        // claim_eq!(
-        //     logger.logs[0],
-        //     to_bytes(&Cis2Event::Transfer(TransferEvent {
-        //         from: ADDRESS_0,
-        //         to: ADDRESS_1,
-        //         token_id: TOKEN_0,
-        //         amount: ContractTokenAmount::from(1),
-        //     })),
-        //     "Incorrect event emitted"
-        // )
+
+        // Check the logs.
+        claim_eq!(logger.logs.len(), 1, "Only one event should be logged");
+        claim_eq!(
+            logger.logs[0],
+            to_bytes(&NftEvent::UpdateUser(UpdateUserEvent {
+                token_id: TOKEN_0,
+                user: User::from_account(ACCOUNT_1),
+                expires: 232142342 as u64
+            })),
+            "Incorrect event emitted"
+        )
     }
 
     #[concordium_test]
@@ -1199,7 +1341,7 @@ mod tests {
 
         let parameter = SetUserParams {
             token_id: TOKEN_0,
-            user: ADDRESS_0,
+            user: User::from_account(ACCOUNT_0),
             expires: 232142342,
         };
         let parameter_bytes = to_bytes(&parameter);
@@ -1211,7 +1353,7 @@ mod tests {
         let mut host = TestHost::new(state, state_builder);
 
         // Call the contract function.
-        let result: ContractResult<()> = contract_set_user(&ctx, &mut host);
+        let result: ContractResult<()> = contract_set_user(&ctx, &mut host, &mut logger);
         // Check the result.
         let err = result.expect_err_report("Expected to fail");
         claim_eq!(
