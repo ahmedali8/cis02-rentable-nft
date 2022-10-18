@@ -334,6 +334,10 @@ impl<S: HasStateApi> State<S> {
         self.implementors.insert(std_id, implementors);
     }
 
+    fn remove_user(&mut self, token_id: &ContractTokenId) {
+        self.user_infos.remove(token_id);
+    }
+
     fn set_user(
         &mut self,
         from: &Address,
@@ -541,8 +545,23 @@ fn contract_transfer<S: HasStateApi>(
             from == sender || state.is_operator(&sender, &from),
             ContractError::Unauthorized
         );
+
         let to_address = to.address();
         // Update the contract state
+        
+        // Remove associated user
+        if from != to_address && !state.user_infos.get(&token_id).is_none() {
+            let user: User = state.user_of(&token_id)?;
+            state.remove_user(&token_id);
+
+            // Log update user event
+            logger.log(&NftEvent::UpdateUser(UpdateUserEvent {
+                token_id,
+                user, // concordium does not have zero address so set same user to expire 0
+                expires: 0 as u64,
+            }))?;
+        }
+
         state.transfer(&token_id, amount, &from, &to_address, builder)?;
 
         // Log transfer event
@@ -1417,6 +1436,8 @@ mod tests {
             1.into(),
             "Token receiver balance for token 1 should be the same as before"
         );
+
+        println!("user: {:?}", host.state().user_of(&TOKEN_0));
 
         // Check the logs.
         claim_eq!(logger.logs.len(), 1, "Only one event should be logged");
