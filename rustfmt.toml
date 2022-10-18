@@ -1,5 +1,5 @@
 binop_separator = "Back"
-comment_width = 120
+comment_width = 80
 imports_granularity = "Crate"
 max_width = 80
 reorder_imports = true

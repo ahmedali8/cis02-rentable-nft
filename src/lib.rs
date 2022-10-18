@@ -76,13 +76,14 @@ impl<S: HasStateApi> AddressState<S> {
 // #[derive(Serial, DeserialWithState, Deletable, StateClone)]
 #[derive(Debug, Serialize, SchemaType)]
 struct UserInfo {
-    user: Address,
+    user: User,
     expires: u64,
 }
 
 /// The contract state.
 // Note: The specification does not specify how to structure the contract state
-// and this could be structured in a more space efficient way depending on the use case.
+// and this could be structured in a more space efficient way depending on the
+// use case.
 #[derive(Serial, DeserialWithState, StateClone)]
 #[concordium(state_parameter = "S")]
 struct State<S> {
@@ -122,6 +123,7 @@ enum CustomContractError {
     TokenIdAlreadyExists,
     /// Failed to invoke a contract.
     InvokeContractError,
+    InvalidUserAddress,
 }
 
 /// Wrapping the custom errors in a type with CIS1 errors.
@@ -215,6 +217,28 @@ impl<S: HasStateApi> State<S> {
         Ok(balance.into())
     }
 
+    fn user_of(&self, token_id: &ContractTokenId) -> ContractResult<User> {
+        ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
+        let user: User = self
+            .user_infos
+            .get(token_id)
+            .map(|user_info| user_info.user)
+            .ok_or(ContractError::Custom(
+                CustomContractError::InvalidUserAddress,
+            ))?;
+        Ok(user.into())
+    }
+
+    fn user_expires(&self, token_id: &ContractTokenId) -> ContractResult<u64> {
+        ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
+        let expires: u64 = self
+            .user_infos
+            .get(token_id)
+            .map(|user_info| user_info.expires)
+            .unwrap_or(0);
+        Ok(expires.into())
+    }
+
     /// Check if a given address is an operator of a given owner address.
     fn is_operator(&self, address: &Address, owner: &Address) -> bool {
         self.state
@@ -239,9 +263,10 @@ impl<S: HasStateApi> State<S> {
         if amount == 0.into() {
             return Ok(());
         }
-        // Since this contract only contains NFTs, no one will have an amount greater
-        // than 1. And since the amount cannot be the zero at this point, the
-        // address must have insufficient funds for any amount other than 1.
+        // Since this contract only contains NFTs, no one will have an amount
+        // greater than 1. And since the amount cannot be the zero at
+        // this point, the address must have insufficient funds for any
+        // amount other than 1.
         ensure_eq!(amount, 1.into(), ContractError::InsufficientFunds);
 
         {
@@ -249,8 +274,8 @@ impl<S: HasStateApi> State<S> {
                 .state
                 .get_mut(from)
                 .ok_or(ContractError::InsufficientFunds)?;
-            // Find and remove the token from the owner, if nothing is removed, we know the
-            // address did not own the token..
+            // Find and remove the token from the owner, if nothing is removed,
+            // we know the address did not own the token..
             let from_had_the_token =
                 from_address_state.owned_tokens.remove(token_id);
             ensure!(from_had_the_token, ContractError::InsufficientFunds);
@@ -314,7 +339,7 @@ impl<S: HasStateApi> State<S> {
         &mut self,
         from: &Address,
         token_id: &ContractTokenId,
-        user: &Address,
+        user: &User,
         expires: &u64,
     ) -> ContractResult<()> {
         ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
@@ -364,6 +389,7 @@ struct ViewAddressState {
 struct ViewState {
     state: Vec<(Address, ViewAddressState)>,
     all_tokens: Vec<ContractTokenId>,
+    user_infos: Vec<(ContractTokenId, UserInfo)>,
 }
 
 /// View function that returns the entire contents of the state. Meant for
@@ -377,17 +403,35 @@ fn contract_view<S: HasStateApi>(
     _ctx: &impl HasReceiveContext,
     host: &impl HasHost<State<S>, StateApiType = S>,
 ) -> ReceiveResult<ViewState> {
-    let state = host.state();
+    let state: &State<S> = host.state();
 
-    let mut inner_state = Vec::new();
+    let mut inner_state: Vec<(Address, ViewAddressState)> = Vec::new();
     for (k, a_state) in state.state.iter() {
-        let owned_tokens = a_state.owned_tokens.iter().map(|x| *x).collect();
-        let operators = a_state.operators.iter().map(|x| *x).collect();
+        let owned_tokens: Vec<TokenIdU32> = a_state
+            .owned_tokens
+            .iter()
+            .map(|x: StateRef<TokenIdU32>| *x)
+            .collect();
+        let operators: Vec<Address> =
+            a_state.operators.iter().map(|x: StateRef<Address>| *x).collect();
         inner_state.push((*k, ViewAddressState { owned_tokens, operators }));
     }
-    let all_tokens = state.all_tokens.iter().map(|x| *x).collect();
 
-    Ok(ViewState { state: inner_state, all_tokens })
+    let all_tokens: Vec<TokenIdU32> =
+        state.all_tokens.iter().map(|x: StateRef<TokenIdU32>| *x).collect();
+
+    let mut user_infos_state: Vec<(ContractTokenId, UserInfo)> = Vec::new();
+    for (k, a_state) in state.user_infos.iter() {
+        let user: User = a_state.user;
+        let expires: u64 = a_state.expires;
+        user_infos_state.push((*k, UserInfo { user, expires }));
+    }
+
+    Ok(ViewState {
+        state: inner_state,
+        all_tokens,
+        user_infos: user_infos_state,
+    })
 }
 
 /// Mint new tokens with a given address as the owner of these tokens.
@@ -749,15 +793,9 @@ fn contract_set_implementor<S: HasStateApi>(
 #[derive(Debug, Serialize, SchemaType)]
 struct SetUserParams {
     token_id: TokenIdU32,
-    user: Address,
+    user: User,
     expires: u64,
 }
-
-// impl From for SetUserParams {
-//     fn from(token_id: TokenIdU32, user: Address, expires: u64) -> Self {
-//         SetUserParams { token_id, user, expires }
-//     }
-// }
 
 #[receive(
     contract = "cis2_rentable_nft",
@@ -783,6 +821,154 @@ fn contract_set_user<S: HasStateApi>(
     )?;
     Ok(())
 }
+
+/// A query for the user of a given address for a given token.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
+#[derive(Debug, Serialize)]
+pub struct UserOfQuery<T: IsTokenId> {
+    /// The ID of the token for which to query the user of.
+    pub token_id: T,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserOfQuery<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::Struct(schema::Fields::Named(vec![(
+            "token_id".to_string(),
+            T::get_type(),
+        )]))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserOfQueryParams<T: IsTokenId> {
+    /// List of balance queries.
+    #[concordium(size_length = 2)]
+    pub queries: Vec<UserOfQuery<T>>,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(
+            schema::SizeLength::U16,
+            Box::new(UserOfQuery::<T>::get_type()),
+        )
+    }
+}
+
+#[derive(Debug, Serialize, Copy)]
+pub enum User {
+    /// The user is an account address.
+    Account(AccountAddress),
+    /// The user is a contract address.
+    Contract(ContractAddress),
+}
+
+impl User {
+    /// Construct a user from an account address.
+    pub fn from_account(address: AccountAddress) -> Self {
+        User::Account(address)
+    }
+
+    /// Construct a user from a contract address.
+    pub fn from_contract(address: ContractAddress) -> Self {
+        User::Contract(address)
+    }
+
+    /// Get the Address of the user.
+    pub fn address(&self) -> Address {
+        match self {
+            User::Account(address) => Address::Account(*address),
+            User::Contract(address, ..) => Address::Contract(*address),
+        }
+    }
+}
+
+impl schema::SchemaType for User {
+    fn get_type() -> schema::Type {
+        schema::Type::Enum(vec![
+            (
+                String::from("Account"),
+                schema::Fields::Unnamed(vec![AccountAddress::get_type()]),
+            ),
+            (
+                String::from("Contract"),
+                schema::Fields::Unnamed(vec![
+                    ContractAddress::get_type(),
+                    // The below string represents the function entrypoint
+                    schema::Type::String(schema::SizeLength::U16),
+                ]),
+            ),
+        ])
+    }
+}
+
+impl From<AccountAddress> for User {
+    fn from(address: AccountAddress) -> Self {
+        Self::from_account(address)
+    }
+}
+
+pub trait IsAddress: Serialize + schema::SchemaType {}
+
+impl IsAddress for User {}
+
+/// The response which is sent back when calling the contract function
+/// `balanceOf`.
+/// It consists of the list of results corresponding to the list of queries.
+#[derive(Debug, Serialize)]
+pub struct UserOfQueryResponse<A: IsAddress>(
+    #[concordium(size_length = 2)] pub Vec<A>,
+);
+
+impl<A: IsAddress> schema::SchemaType for UserOfQueryResponse<A> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(schema::SizeLength::U16, Box::new(A::get_type()))
+    }
+}
+
+impl<A: IsAddress> From<Vec<A>> for UserOfQueryResponse<A> {
+    fn from(results: Vec<A>) -> Self {
+        UserOfQueryResponse(results)
+    }
+}
+
+impl<A: IsAddress> AsRef<[A]> for UserOfQueryResponse<A> {
+    fn as_ref(&self) -> &[A] {
+        &self.0
+    }
+}
+
+/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenIDs used by this contract.
+type ContractUserOfQueryParams = UserOfQueryParams<ContractTokenId>;
+/// Response type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenAmounts used by this contract.
+type ContractUserOfQueryResponse = UserOfQueryResponse<User>;
+
+// #[receive(
+//     contract = "cis2_rentable_nft",
+//     name = "userOf",
+//     parameter = "ContractUserOfQueryParams",
+//     return_value = "ContractUserOfQueryResponse",
+//     error = "ContractError"
+// )]
+// fn contract_user_of<S: HasStateApi>(
+//     ctx: &impl HasReceiveContext,
+//     host: &impl HasHost<State<S>, StateApiType = S>,
+// ) -> ContractResult<ContractUserOfQueryResponse> {
+//     // Parse the parameter.
+//     let params: ContractUserOfQueryParams = ctx.parameter_cursor().get()?;
+//     // Build the response.
+//     let mut response = Vec::with_capacity(params.queries.len());
+//     for query in params.queries {
+//         // Query the state for balance.
+//         let amount = host.state().balance(&query.token_id, &query.address)?;
+//         response.push(amount);
+//     }
+//     let result = ContractBalanceOfQueryResponse::from(response);
+//     Ok(result)
+// }
 
 // Tests
 
@@ -828,8 +1014,8 @@ mod tests {
         let state = result.expect_report("Contract initialization failed");
 
         // Check the state
-        // Note. This is rather expensive as an iterator is created and then traversed -
-        // should be avoided when writing smart contracts.
+        // Note. This is rather expensive as an iterator is created and then
+        // traversed - should be avoided when writing smart contracts.
         claim_eq!(
             state.all_tokens.iter().count(),
             0,
@@ -869,8 +1055,8 @@ mod tests {
         claim!(result.is_ok(), "Results in rejection");
 
         // Check the state
-        // Note. This is rather expensive as an iterator is created and then traversed -
-        // should be avoided when writing smart contracts.
+        // Note. This is rather expensive as an iterator is created and then
+        // traversed - should be avoided when writing smart contracts.
         claim_eq!(
             host.state().all_tokens.iter().count(),
             3,
