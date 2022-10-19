@@ -1,14 +1,13 @@
-//! A NFT smart contract example using the Concordium Token Standard CIS2.
+//! A NFT Rentable smart contract using the Concordium Token Standard CIS2.
 //!
 //! # Description
 //! An instance of this smart contract can contain a number of different token
 //! each identified by a token ID. A token is then globally identified by the
 //! contract address together with the token ID.
 //!
-//! In this example the contract is initialized with no tokens, and tokens can
+//! This contract is initialized with no tokens, and tokens can
 //! be minted through a `mint` contract function, which will only succeed for
-//! the contract owner. No functionality to burn token is defined in this
-//! example.
+//! the contract owner. No functionality to burn token is defined.
 //!
 //! Note: The word 'address' refers to either an account address or a
 //! contract address.
@@ -18,6 +17,9 @@
 //! address to another address. An address can enable and disable one or more
 //! addresses as operators. An operator of some address is allowed to transfer
 //! any tokens owned by this address.
+//!
+//! This contract has a `user` role for renting tokens, which will only succeed
+//! for the token owner. An Address and Expiration timestamp can be given.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -32,80 +34,47 @@ const TOKEN_METADATA_BASE_URL: &str = "https://some.example/token/";
 const SUPPORTS_STANDARDS: [StandardIdentifier<'static>; 2] =
     [CIS0_STANDARD_IDENTIFIER, CIS2_STANDARD_IDENTIFIER];
 
-// Types
+// Events
+pub const UPDATE_USER_EVENT_TAG: u8 = u8::MAX - 5;
 
-/// Contract token ID type.
-/// To save bytes we use a token ID type limited to a `u32`.
-type ContractTokenId = TokenIdU32;
-
-/// Contract token amount.
-/// Since the tokens are non-fungible the total supply of any token will be at
-/// most 1 and it is fine to use a small type for representing token amounts.
-type ContractTokenAmount = TokenAmountU8;
-
-/// The parameter for the contract function `mint` which mints a number of
-/// tokens to a given address.
-#[derive(Serial, Deserial, SchemaType)]
-struct MintParams {
-    /// Owner of the newly minted tokens.
-    owner: Address,
-    /// A collection of tokens to mint.
-    #[concordium(size_length = 1)]
-    tokens: collections::BTreeSet<ContractTokenId>,
+#[derive(Debug)]
+pub enum NftEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
+    UpdateUser(UpdateUserEvent<T, A, U>),
 }
 
-/// The state for each address.
-#[derive(Serial, DeserialWithState, Deletable, StateClone)]
-#[concordium(state_parameter = "S")]
-struct AddressState<S> {
-    /// The tokens owned by this address.
-    owned_tokens: StateSet<ContractTokenId, S>,
-    /// The address which are currently enabled as operators for this address.
-    operators: StateSet<Address, S>,
+impl<T: IsTokenId, A: IsAddress, U: IsU64> Serial for NftEvent<T, A, U> {
+    fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
+        match self {
+            NftEvent::UpdateUser(event) => {
+                out.write_u8(UPDATE_USER_EVENT_TAG)?;
+                event.serial(out)
+            }
+        }
+    }
 }
 
-impl<S: HasStateApi> AddressState<S> {
-    fn empty(state_builder: &mut StateBuilder<S>) -> Self {
-        AddressState {
-            owned_tokens: state_builder.new_set(),
-            operators: state_builder.new_set(),
+impl<T: IsTokenId, A: IsAddress, U: IsU64> Deserial for NftEvent<T, A, U> {
+    fn deserial<R: Read>(source: &mut R) -> ParseResult<Self> {
+        let tag = source.read_u8()?;
+        match tag {
+            UPDATE_USER_EVENT_TAG => {
+                UpdateUserEvent::<T, A, U>::deserial(source)
+                    .map(NftEvent::UpdateUser)
+            }
+            _ => Err(ParseError::default()),
         }
     }
 }
 
 #[derive(Debug, Serialize, SchemaType)]
-struct UserInfo {
-    user: User,
-    expires: u64,
+pub struct UpdateUserEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
+    /// The ID of the token being transferred.
+    pub token_id: T,
+    pub user: A,
+    pub expires: U,
 }
 
-/// The contract state.
-// Note: The specification does not specify how to structure the contract state
-// and this could be structured in a more space efficient way depending on the
-// use case.
-#[derive(Serial, DeserialWithState, StateClone)]
-#[concordium(state_parameter = "S")]
-struct State<S> {
-    /// The state for each address.
-    state: StateMap<Address, AddressState<S>, S>,
-    /// All of the token IDs
-    all_tokens: StateSet<ContractTokenId, S>,
-    /// Map with contract addresses providing implementations of additional
-    /// standards.
-    implementors: StateMap<StandardIdentifierOwned, Vec<ContractAddress>, S>,
-    user_infos: StateMap<ContractTokenId, UserInfo, S>,
-}
-
-/// The parameter type for the contract function `setImplementors`.
-/// Takes a standard identifier and list of contract addresses providing
-/// implementations of this standard.
-#[derive(Debug, Serialize, SchemaType)]
-struct SetImplementorsParams {
-    /// The identifier for the standard.
-    id: StandardIdentifierOwned,
-    /// The addresses of the implementors of the standard.
-    implementors: Vec<ContractAddress>,
-}
+// Errors
 
 /// The custom errors the contract can produce.
 #[derive(Serialize, Debug, PartialEq, Eq, Reject, SchemaType)]
@@ -152,6 +121,311 @@ impl From<CustomContractError> for ContractError {
     fn from(c: CustomContractError) -> Self {
         Cis2Error::Custom(c)
     }
+}
+
+// Types
+
+/// Contract token ID type.
+/// To save bytes we use a token ID type limited to a `u32`.
+type ContractTokenId = TokenIdU32;
+
+/// Contract token amount.
+/// Since the tokens are non-fungible the total supply of any token will be at
+/// most 1 and it is fine to use a small type for representing token amounts.
+type ContractTokenAmount = TokenAmountU8;
+
+#[derive(Debug, Serialize, Copy, Clone)]
+pub enum User {
+    /// The user is an account address.
+    Account(AccountAddress),
+    /// The user is a contract address.
+    Contract(ContractAddress),
+}
+
+impl User {
+    /// Construct a user from an account address.
+    pub fn from_account(address: AccountAddress) -> Self {
+        User::Account(address)
+    }
+
+    /// Construct a user from a contract address.
+    pub fn from_contract(address: ContractAddress) -> Self {
+        User::Contract(address)
+    }
+
+    /// Get the Address of the user.
+    pub fn address(&self) -> Address {
+        match self {
+            User::Account(address) => Address::Account(*address),
+            User::Contract(address, ..) => Address::Contract(*address),
+        }
+    }
+}
+
+impl schema::SchemaType for User {
+    fn get_type() -> schema::Type {
+        schema::Type::Enum(vec![
+            (
+                String::from("Account"),
+                schema::Fields::Unnamed(vec![AccountAddress::get_type()]),
+            ),
+            (
+                String::from("Contract"),
+                schema::Fields::Unnamed(vec![
+                    ContractAddress::get_type(),
+                    // The below string represents the function entrypoint
+                    schema::Type::String(schema::SizeLength::U16),
+                ]),
+            ),
+        ])
+    }
+}
+
+impl From<AccountAddress> for User {
+    fn from(address: AccountAddress) -> Self {
+        Self::from_account(address)
+    }
+}
+
+#[derive(Serialize, SchemaType)]
+struct ViewAddressState {
+    owned_tokens: Vec<ContractTokenId>,
+    operators: Vec<Address>,
+}
+
+#[derive(Serialize, SchemaType)]
+struct ViewState {
+    state: Vec<(Address, ViewAddressState)>,
+    all_tokens: Vec<ContractTokenId>,
+    user_infos: Vec<(ContractTokenId, UserInfo)>,
+}
+
+/// The parameter for the contract function `mint` which mints a number of
+/// tokens to a given address.
+#[derive(Serial, Deserial, SchemaType)]
+struct MintParams {
+    /// Owner of the newly minted tokens.
+    owner: Address,
+    /// A collection of tokens to mint.
+    #[concordium(size_length = 1)]
+    tokens: collections::BTreeSet<ContractTokenId>,
+}
+
+type TransferParameter = TransferParams<ContractTokenId, ContractTokenAmount>;
+
+/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenIDs used by this contract.
+type ContractBalanceOfQueryParams = BalanceOfQueryParams<ContractTokenId>;
+/// Response type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenAmounts used by this contract.
+type ContractBalanceOfQueryResponse =
+    BalanceOfQueryResponse<ContractTokenAmount>;
+
+/// Parameter type for the CIS-2 function `tokenMetadata` specialized to the
+/// subset of TokenIDs used by this contract.
+type ContractTokenMetadataQueryParams =
+    TokenMetadataQueryParams<ContractTokenId>;
+
+/// The parameter type for the contract function `setImplementors`.
+/// Takes a standard identifier and list of contract addresses providing
+/// implementations of this standard.
+#[derive(Debug, Serialize, SchemaType)]
+struct SetImplementorsParams {
+    /// The identifier for the standard.
+    id: StandardIdentifierOwned,
+    /// The addresses of the implementors of the standard.
+    implementors: Vec<ContractAddress>,
+}
+
+#[derive(Debug, Serialize, SchemaType)]
+struct SetUserParams {
+    token_id: TokenIdU32,
+    user: User,
+    expires: u64,
+}
+
+/// A query for the user of a given address for a given token.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
+#[derive(Debug, Serialize)]
+pub struct UserOfQuery<T: IsTokenId> {
+    /// The ID of the token for which to query the user of.
+    pub token_id: T,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserOfQuery<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::Struct(schema::Fields::Named(vec![(
+            "token_id".to_string(),
+            T::get_type(),
+        )]))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserOfQueryParams<T: IsTokenId> {
+    /// List of balance queries.
+    #[concordium(size_length = 2)]
+    pub queries: Vec<UserOfQuery<T>>,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(
+            schema::SizeLength::U16,
+            Box::new(UserOfQuery::<T>::get_type()),
+        )
+    }
+}
+
+pub trait IsAddress: Serialize + schema::SchemaType {}
+
+impl IsAddress for User {}
+
+/// The response which is sent back when calling the contract function
+/// `balanceOf`.
+/// It consists of the list of results corresponding to the list of queries.
+#[derive(Debug, Serialize)]
+pub struct UserOfQueryResponse<A: IsAddress>(
+    #[concordium(size_length = 2)] pub Vec<A>,
+);
+
+impl<A: IsAddress> schema::SchemaType for UserOfQueryResponse<A> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(schema::SizeLength::U16, Box::new(A::get_type()))
+    }
+}
+
+impl<A: IsAddress> From<Vec<A>> for UserOfQueryResponse<A> {
+    fn from(results: Vec<A>) -> Self {
+        UserOfQueryResponse(results)
+    }
+}
+
+impl<A: IsAddress> AsRef<[A]> for UserOfQueryResponse<A> {
+    fn as_ref(&self) -> &[A] {
+        &self.0
+    }
+}
+
+/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenIDs used by this contract.
+type ContractUserOfQueryParams = UserOfQueryParams<ContractTokenId>;
+/// Response type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenAmounts used by this contract.
+type ContractUserOfQueryResponse = UserOfQueryResponse<User>;
+
+/// A query for the user of a given address for a given token.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
+#[derive(Debug, Serialize)]
+pub struct UserExpiresQuery<T: IsTokenId> {
+    /// The ID of the token for which to query the user of.
+    pub token_id: T,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserExpiresQuery<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::Struct(schema::Fields::Named(vec![(
+            "token_id".to_string(),
+            T::get_type(),
+        )]))
+    }
+}
+
+pub trait IsU64: Serialize + schema::SchemaType {}
+
+impl IsU64 for u64 {}
+
+#[derive(Debug, Serialize)]
+pub struct UserExpiresQueryParams<T: IsTokenId> {
+    /// List of balance queries.
+    #[concordium(size_length = 2)]
+    pub queries: Vec<UserExpiresQuery<T>>,
+}
+
+impl<T: IsTokenId> schema::SchemaType for UserExpiresQueryParams<T> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(
+            schema::SizeLength::U16,
+            Box::new(UserExpiresQuery::<T>::get_type()),
+        )
+    }
+}
+
+/// The response which is sent back when calling the contract function
+/// `balanceOf`.
+/// It consists of the list of results corresponding to the list of queries.
+#[derive(Debug, Serialize)]
+pub struct UserExpiresQueryResponse<A: IsU64>(
+    #[concordium(size_length = 2)] pub Vec<A>,
+);
+
+impl<A: IsU64> schema::SchemaType for UserExpiresQueryResponse<A> {
+    fn get_type() -> schema::Type {
+        schema::Type::List(schema::SizeLength::U16, Box::new(A::get_type()))
+    }
+}
+
+impl<A: IsU64> From<Vec<A>> for UserExpiresQueryResponse<A> {
+    fn from(results: Vec<A>) -> Self {
+        UserExpiresQueryResponse(results)
+    }
+}
+
+impl<A: IsU64> AsRef<[A]> for UserExpiresQueryResponse<A> {
+    fn as_ref(&self) -> &[A] {
+        &self.0
+    }
+}
+
+/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenIDs used by this contract.
+type ContractUserExpiresQueryParams = UserExpiresQueryParams<ContractTokenId>;
+/// Response type for the CIS-2 function `balanceOf` specialized to the subset
+/// of TokenAmounts used by this contract.
+type ContractUserExpiresQueryResponse = UserExpiresQueryResponse<u64>;
+
+/// The state for each address.
+#[derive(Serial, DeserialWithState, Deletable, StateClone)]
+#[concordium(state_parameter = "S")]
+struct AddressState<S> {
+    /// The tokens owned by this address.
+    owned_tokens: StateSet<ContractTokenId, S>,
+    /// The address which are currently enabled as operators for this address.
+    operators: StateSet<Address, S>,
+}
+
+impl<S: HasStateApi> AddressState<S> {
+    fn empty(state_builder: &mut StateBuilder<S>) -> Self {
+        AddressState {
+            owned_tokens: state_builder.new_set(),
+            operators: state_builder.new_set(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, SchemaType)]
+struct UserInfo {
+    user: User,
+    expires: u64,
+}
+
+/// The contract state.
+// Note: The specification does not specify how to structure the contract state
+// and this could be structured in a more space efficient way depending on the
+// use case.
+#[derive(Serial, DeserialWithState, StateClone)]
+#[concordium(state_parameter = "S")]
+struct State<S> {
+    /// The state for each address.
+    state: StateMap<Address, AddressState<S>, S>,
+    /// All of the token IDs
+    all_tokens: StateSet<ContractTokenId, S>,
+    /// Map with contract addresses providing implementations of additional
+    /// standards.
+    implementors: StateMap<StandardIdentifierOwned, Vec<ContractAddress>, S>,
+    user_infos: StateMap<ContractTokenId, UserInfo, S>,
 }
 
 // Functions for creating, updating and querying the contract state.
@@ -382,19 +656,6 @@ fn contract_init<S: HasStateApi>(
     Ok(State::empty(state_builder))
 }
 
-#[derive(Serialize, SchemaType)]
-struct ViewAddressState {
-    owned_tokens: Vec<ContractTokenId>,
-    operators: Vec<Address>,
-}
-
-#[derive(Serialize, SchemaType)]
-struct ViewState {
-    state: Vec<(Address, ViewAddressState)>,
-    all_tokens: Vec<ContractTokenId>,
-    user_infos: Vec<(ContractTokenId, UserInfo)>,
-}
-
 /// View function that returns the entire contents of the state. Meant for
 /// testing.
 #[receive(
@@ -502,8 +763,6 @@ fn contract_mint<S: HasStateApi>(
     }
     Ok(())
 }
-
-type TransferParameter = TransferParams<ContractTokenId, ContractTokenAmount>;
 
 /// Execute a list of token transfers, in the order of the list.
 ///
@@ -667,14 +926,6 @@ fn contract_operator_of<S: HasStateApi>(
     Ok(result)
 }
 
-/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenIDs used by this contract.
-type ContractBalanceOfQueryParams = BalanceOfQueryParams<ContractTokenId>;
-/// Response type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenAmounts used by this contract.
-type ContractBalanceOfQueryResponse =
-    BalanceOfQueryResponse<ContractTokenAmount>;
-
 /// Get the balance of given token IDs and addresses.
 ///
 /// It rejects if:
@@ -703,11 +954,6 @@ fn contract_balance_of<S: HasStateApi>(
     let result = ContractBalanceOfQueryResponse::from(response);
     Ok(result)
 }
-
-/// Parameter type for the CIS-2 function `tokenMetadata` specialized to the
-/// subset of TokenIDs used by this contract.
-type ContractTokenMetadataQueryParams =
-    TokenMetadataQueryParams<ContractTokenId>;
 
 /// Get the token metadata URLs and checksums given a list of token IDs.
 ///
@@ -808,52 +1054,6 @@ fn contract_set_implementor<S: HasStateApi>(
     Ok(())
 }
 
-pub const UPDATE_USER_EVENT_TAG: u8 = u8::MAX - 5;
-
-#[derive(Debug)]
-pub enum NftEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
-    UpdateUser(UpdateUserEvent<T, A, U>),
-}
-
-impl<T: IsTokenId, A: IsAddress, U: IsU64> Serial for NftEvent<T, A, U> {
-    fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
-        match self {
-            NftEvent::UpdateUser(event) => {
-                out.write_u8(UPDATE_USER_EVENT_TAG)?;
-                event.serial(out)
-            }
-        }
-    }
-}
-
-impl<T: IsTokenId, A: IsAddress, U: IsU64> Deserial for NftEvent<T, A, U> {
-    fn deserial<R: Read>(source: &mut R) -> ParseResult<Self> {
-        let tag = source.read_u8()?;
-        match tag {
-            UPDATE_USER_EVENT_TAG => {
-                UpdateUserEvent::<T, A, U>::deserial(source)
-                    .map(NftEvent::UpdateUser)
-            }
-            _ => Err(ParseError::default()),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, SchemaType)]
-pub struct UpdateUserEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
-    /// The ID of the token being transferred.
-    pub token_id: T,
-    pub user: A,
-    pub expires: U,
-}
-
-#[derive(Debug, Serialize, SchemaType)]
-struct SetUserParams {
-    token_id: TokenIdU32,
-    user: User,
-    expires: u64,
-}
-
 #[receive(
     contract = "cis2_rentable_nft",
     name = "setUser",
@@ -889,130 +1089,6 @@ fn contract_set_user<S: HasStateApi>(
     Ok(())
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
-pub enum User {
-    /// The user is an account address.
-    Account(AccountAddress),
-    /// The user is a contract address.
-    Contract(ContractAddress),
-}
-
-impl User {
-    /// Construct a user from an account address.
-    pub fn from_account(address: AccountAddress) -> Self {
-        User::Account(address)
-    }
-
-    /// Construct a user from a contract address.
-    pub fn from_contract(address: ContractAddress) -> Self {
-        User::Contract(address)
-    }
-
-    /// Get the Address of the user.
-    pub fn address(&self) -> Address {
-        match self {
-            User::Account(address) => Address::Account(*address),
-            User::Contract(address, ..) => Address::Contract(*address),
-        }
-    }
-}
-
-impl schema::SchemaType for User {
-    fn get_type() -> schema::Type {
-        schema::Type::Enum(vec![
-            (
-                String::from("Account"),
-                schema::Fields::Unnamed(vec![AccountAddress::get_type()]),
-            ),
-            (
-                String::from("Contract"),
-                schema::Fields::Unnamed(vec![
-                    ContractAddress::get_type(),
-                    // The below string represents the function entrypoint
-                    schema::Type::String(schema::SizeLength::U16),
-                ]),
-            ),
-        ])
-    }
-}
-
-impl From<AccountAddress> for User {
-    fn from(address: AccountAddress) -> Self {
-        Self::from_account(address)
-    }
-}
-
-/// A query for the user of a given address for a given token.
-// Note: For the serialization to be derived according to the CIS2
-// specification, the order of the fields cannot be changed.
-#[derive(Debug, Serialize)]
-pub struct UserOfQuery<T: IsTokenId> {
-    /// The ID of the token for which to query the user of.
-    pub token_id: T,
-}
-
-impl<T: IsTokenId> schema::SchemaType for UserOfQuery<T> {
-    fn get_type() -> schema::Type {
-        schema::Type::Struct(schema::Fields::Named(vec![(
-            "token_id".to_string(),
-            T::get_type(),
-        )]))
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct UserOfQueryParams<T: IsTokenId> {
-    /// List of balance queries.
-    #[concordium(size_length = 2)]
-    pub queries: Vec<UserOfQuery<T>>,
-}
-
-impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
-    fn get_type() -> schema::Type {
-        schema::Type::List(
-            schema::SizeLength::U16,
-            Box::new(UserOfQuery::<T>::get_type()),
-        )
-    }
-}
-
-pub trait IsAddress: Serialize + schema::SchemaType {}
-
-impl IsAddress for User {}
-
-/// The response which is sent back when calling the contract function
-/// `balanceOf`.
-/// It consists of the list of results corresponding to the list of queries.
-#[derive(Debug, Serialize)]
-pub struct UserOfQueryResponse<A: IsAddress>(
-    #[concordium(size_length = 2)] pub Vec<A>,
-);
-
-impl<A: IsAddress> schema::SchemaType for UserOfQueryResponse<A> {
-    fn get_type() -> schema::Type {
-        schema::Type::List(schema::SizeLength::U16, Box::new(A::get_type()))
-    }
-}
-
-impl<A: IsAddress> From<Vec<A>> for UserOfQueryResponse<A> {
-    fn from(results: Vec<A>) -> Self {
-        UserOfQueryResponse(results)
-    }
-}
-
-impl<A: IsAddress> AsRef<[A]> for UserOfQueryResponse<A> {
-    fn as_ref(&self) -> &[A] {
-        &self.0
-    }
-}
-
-/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenIDs used by this contract.
-type ContractUserOfQueryParams = UserOfQueryParams<ContractTokenId>;
-/// Response type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenAmounts used by this contract.
-type ContractUserOfQueryResponse = UserOfQueryResponse<User>;
-
 #[receive(
     contract = "cis2_rentable_nft",
     name = "userOf",
@@ -1036,77 +1112,6 @@ fn contract_user_of<S: HasStateApi>(
     let result = ContractUserOfQueryResponse::from(response);
     Ok(result)
 }
-
-/// A query for the user of a given address for a given token.
-// Note: For the serialization to be derived according to the CIS2
-// specification, the order of the fields cannot be changed.
-#[derive(Debug, Serialize)]
-pub struct UserExpiresQuery<T: IsTokenId> {
-    /// The ID of the token for which to query the user of.
-    pub token_id: T,
-}
-
-impl<T: IsTokenId> schema::SchemaType for UserExpiresQuery<T> {
-    fn get_type() -> schema::Type {
-        schema::Type::Struct(schema::Fields::Named(vec![(
-            "token_id".to_string(),
-            T::get_type(),
-        )]))
-    }
-}
-
-pub trait IsU64: Serialize + schema::SchemaType {}
-
-impl IsU64 for u64 {}
-
-#[derive(Debug, Serialize)]
-pub struct UserExpiresQueryParams<T: IsTokenId> {
-    /// List of balance queries.
-    #[concordium(size_length = 2)]
-    pub queries: Vec<UserExpiresQuery<T>>,
-}
-
-impl<T: IsTokenId> schema::SchemaType for UserExpiresQueryParams<T> {
-    fn get_type() -> schema::Type {
-        schema::Type::List(
-            schema::SizeLength::U16,
-            Box::new(UserExpiresQuery::<T>::get_type()),
-        )
-    }
-}
-
-/// The response which is sent back when calling the contract function
-/// `balanceOf`.
-/// It consists of the list of results corresponding to the list of queries.
-#[derive(Debug, Serialize)]
-pub struct UserExpiresQueryResponse<A: IsU64>(
-    #[concordium(size_length = 2)] pub Vec<A>,
-);
-
-impl<A: IsU64> schema::SchemaType for UserExpiresQueryResponse<A> {
-    fn get_type() -> schema::Type {
-        schema::Type::List(schema::SizeLength::U16, Box::new(A::get_type()))
-    }
-}
-
-impl<A: IsU64> From<Vec<A>> for UserExpiresQueryResponse<A> {
-    fn from(results: Vec<A>) -> Self {
-        UserExpiresQueryResponse(results)
-    }
-}
-
-impl<A: IsU64> AsRef<[A]> for UserExpiresQueryResponse<A> {
-    fn as_ref(&self) -> &[A] {
-        &self.0
-    }
-}
-
-/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenIDs used by this contract.
-type ContractUserExpiresQueryParams = UserExpiresQueryParams<ContractTokenId>;
-/// Response type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenAmounts used by this contract.
-type ContractUserExpiresQueryResponse = UserExpiresQueryResponse<u64>;
 
 #[receive(
     contract = "cis2_rentable_nft",
