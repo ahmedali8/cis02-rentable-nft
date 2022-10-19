@@ -4,4 +4,4 @@ target/
 # files
 **/*.rs.bk
 Cargo.lock
-cis02-rentable-nft-4907.wasm.v1
+cis02-rentable-nft.wasm.v1
