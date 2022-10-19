@@ -35,10 +35,35 @@ const SUPPORTS_STANDARDS: [StandardIdentifier<'static>; 2] =
     [CIS0_STANDARD_IDENTIFIER, CIS2_STANDARD_IDENTIFIER];
 
 // Events
+/// Tag for the NFT UpdateUser event.
 pub const UPDATE_USER_EVENT_TAG: u8 = u8::MAX - 5;
 
+/// Trait for marking types as Address.
+pub trait IsAddress: Serialize + schema::SchemaType {}
+
+/// Trait for marking types as u64.
+pub trait IsU64: Serialize + schema::SchemaType {}
+
+impl IsU64 for u64 {}
+
+/// An untagged event when the user of an NFT is changed or expires is changed.
+/// For a tagged version, use `NftEvent`.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
+#[derive(Debug, Serialize, SchemaType)]
+pub struct UpdateUserEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
+    /// The ID of the token being transferred.
+    pub token_id: T,
+    /// The address to whom, user role would be assigned.
+    pub user: A,
+    /// The timestamp when the user role expires.
+    pub expires: U,
+}
+
+/// Tagged Nft event to be serialized for the event log.
 #[derive(Debug)]
 pub enum NftEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
+    /// Updates to a user for a specific token id, address and timestamp.
     UpdateUser(UpdateUserEvent<T, A, U>),
 }
 
@@ -66,14 +91,6 @@ impl<T: IsTokenId, A: IsAddress, U: IsU64> Deserial for NftEvent<T, A, U> {
     }
 }
 
-#[derive(Debug, Serialize, SchemaType)]
-pub struct UpdateUserEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
-    /// The ID of the token being transferred.
-    pub token_id: T,
-    pub user: A,
-    pub expires: U,
-}
-
 // Errors
 
 /// The custom errors the contract can produce.
@@ -91,6 +108,7 @@ enum CustomContractError {
     TokenIdAlreadyExists,
     /// Failed to invoke a contract.
     InvokeContractError,
+    /// Failed to get user address.
     InvalidUserAddress,
 }
 
@@ -125,15 +143,10 @@ impl From<CustomContractError> for ContractError {
 
 // Types
 
-/// Contract token ID type.
-/// To save bytes we use a token ID type limited to a `u32`.
-type ContractTokenId = TokenIdU32;
-
-/// Contract token amount.
-/// Since the tokens are non-fungible the total supply of any token will be at
-/// most 1 and it is fine to use a small type for representing token amounts.
-type ContractTokenAmount = TokenAmountU8;
-
+/// The user address, similar to the Address type but with serialization.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the variants and the order of their fields
+// cannot be changed.
 #[derive(Debug, Serialize, Copy, Clone)]
 pub enum User {
     /// The user is an account address.
@@ -187,6 +200,17 @@ impl From<AccountAddress> for User {
     }
 }
 
+impl IsAddress for User {}
+
+/// Contract token ID type.
+/// To save bytes we use a token ID type limited to a `u32`.
+type ContractTokenId = TokenIdU32;
+
+/// Contract token amount.
+/// Since the tokens are non-fungible the total supply of any token will be at
+/// most 1 and it is fine to use a small type for representing token amounts.
+type ContractTokenAmount = TokenAmountU8;
+
 #[derive(Serialize, SchemaType)]
 struct ViewAddressState {
     owned_tokens: Vec<ContractTokenId>,
@@ -237,10 +261,14 @@ struct SetImplementorsParams {
     implementors: Vec<ContractAddress>,
 }
 
+/// The parameter type for the contract function `setUser`.
 #[derive(Debug, Serialize, SchemaType)]
 struct SetUserParams {
-    token_id: TokenIdU32,
+    /// The ID of the token being transferred.
+    token_id: ContractTokenId,
+    /// The address whom will become the user.
     user: User,
+    /// The expiration timestamp.
     expires: u64,
 }
 
@@ -262,9 +290,12 @@ impl<T: IsTokenId> schema::SchemaType for UserOfQuery<T> {
     }
 }
 
+/// The parameter type for the contract function `userOf`.
+// Note: For the serialization to be derived according to the CIS2
+// specification, the order of the fields cannot be changed.
 #[derive(Debug, Serialize)]
 pub struct UserOfQueryParams<T: IsTokenId> {
-    /// List of balance queries.
+    /// List of userOf queries.
     #[concordium(size_length = 2)]
     pub queries: Vec<UserOfQuery<T>>,
 }
@@ -278,12 +309,8 @@ impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
     }
 }
 
-pub trait IsAddress: Serialize + schema::SchemaType {}
-
-impl IsAddress for User {}
-
 /// The response which is sent back when calling the contract function
-/// `balanceOf`.
+/// `userOf`.
 /// It consists of the list of results corresponding to the list of queries.
 #[derive(Debug, Serialize)]
 pub struct UserOfQueryResponse<A: IsAddress>(
@@ -308,14 +335,14 @@ impl<A: IsAddress> AsRef<[A]> for UserOfQueryResponse<A> {
     }
 }
 
-/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// Parameter type for the function `userOf` specialized to the subset
 /// of TokenIDs used by this contract.
 type ContractUserOfQueryParams = UserOfQueryParams<ContractTokenId>;
-/// Response type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenAmounts used by this contract.
+/// Response type for the function `userOf` specialized to the subset
+/// of Users used by this contract.
 type ContractUserOfQueryResponse = UserOfQueryResponse<User>;
 
-/// A query for the user of a given address for a given token.
+/// A query for the expires of a given user address for a given token.
 // Note: For the serialization to be derived according to the CIS2
 // specification, the order of the fields cannot be changed.
 #[derive(Debug, Serialize)]
@@ -332,10 +359,6 @@ impl<T: IsTokenId> schema::SchemaType for UserExpiresQuery<T> {
         )]))
     }
 }
-
-pub trait IsU64: Serialize + schema::SchemaType {}
-
-impl IsU64 for u64 {}
 
 #[derive(Debug, Serialize)]
 pub struct UserExpiresQueryParams<T: IsTokenId> {
@@ -379,11 +402,11 @@ impl<A: IsU64> AsRef<[A]> for UserExpiresQueryResponse<A> {
     }
 }
 
-/// Parameter type for the CIS-2 function `balanceOf` specialized to the subset
+/// Parameter type for the function `userExpires` specialized to the subset
 /// of TokenIDs used by this contract.
 type ContractUserExpiresQueryParams = UserExpiresQueryParams<ContractTokenId>;
-/// Response type for the CIS-2 function `balanceOf` specialized to the subset
-/// of TokenAmounts used by this contract.
+/// Response type for the function `userExpires` specialized to the subset
+/// of u64 used by this contract.
 type ContractUserExpiresQueryResponse = UserExpiresQueryResponse<u64>;
 
 /// The state for each address.
@@ -405,9 +428,12 @@ impl<S: HasStateApi> AddressState<S> {
     }
 }
 
+/// The state of User role.
 #[derive(Debug, Serialize, SchemaType)]
 struct UserInfo {
+    /// The address of user role.
     user: User,
+    /// The user expires unix timestamp.
     expires: u64,
 }
 
@@ -425,6 +451,7 @@ struct State<S> {
     /// Map with contract addresses providing implementations of additional
     /// standards.
     implementors: StateMap<StandardIdentifierOwned, Vec<ContractAddress>, S>,
+    /// The state of each user info of token ID.
     user_infos: StateMap<ContractTokenId, UserInfo, S>,
 }
 
@@ -490,6 +517,7 @@ impl<S: HasStateApi> State<S> {
         Ok(balance.into())
     }
 
+    /// Get the user address of a token id.
     fn user_of(&self, token_id: &ContractTokenId) -> ContractResult<User> {
         ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
         let user = self
@@ -502,6 +530,7 @@ impl<S: HasStateApi> State<S> {
         Ok(user.into())
     }
 
+    /// Get the user expires of a token id.
     fn user_expires(&self, token_id: &ContractTokenId) -> ContractResult<u64> {
         ensure!(self.contains_token(token_id), ContractError::InvalidTokenId);
         let expires: u64 = self
@@ -608,10 +637,12 @@ impl<S: HasStateApi> State<S> {
         self.implementors.insert(std_id, implementors);
     }
 
+    /// Update the state removing the user for the given token id.
     fn remove_user(&mut self, token_id: &ContractTokenId) {
         self.user_infos.remove(token_id);
     }
 
+    /// Update the state adding a new user for the given token id.
     fn set_user(
         &mut self,
         from: &Address,
@@ -1054,6 +1085,15 @@ fn contract_set_implementor<S: HasStateApi>(
     Ok(())
 }
 
+/// Set the user address for the given token id.
+///
+/// Logs a `UpdateUserEvent` event.
+///
+/// It rejects if:
+/// - It fails to parse the parameter.
+/// - If fails if the sender is not the owner of the token.
+/// - If the token is not owned by the `from`.
+/// - Fails to log event.
 #[receive(
     contract = "cis2_rentable_nft",
     name = "setUser",
@@ -1089,6 +1129,11 @@ fn contract_set_user<S: HasStateApi>(
     Ok(())
 }
 
+/// Get the user address of a token ID.
+///
+/// It rejects if:
+/// - It fails to parse the parameter.
+/// - Any of the queried `token_id` does not exist.
 #[receive(
     contract = "cis2_rentable_nft",
     name = "userOf",
@@ -1113,6 +1158,11 @@ fn contract_user_of<S: HasStateApi>(
     Ok(result)
 }
 
+/// Get the user expires of a token ID.
+///
+/// It rejects if:
+/// - It fails to parse the parameter.
+/// - Any of the queried `token_id` does not exist.
 #[receive(
     contract = "cis2_rentable_nft",
     name = "userExpires",
@@ -1310,6 +1360,7 @@ mod tests {
         );
     }
 
+    /// Test set user, ensuring user role is only assigned by token owner.
     #[concordium_test]
     fn test_set_user() {
         // Setup the context
@@ -1359,6 +1410,7 @@ mod tests {
         )
     }
 
+    /// Test set user fails if sender is neither the owner or an operator of the owner.
     #[concordium_test]
     fn test_set_user_not_authorized() {
         // Setup the context
@@ -1390,6 +1442,7 @@ mod tests {
         );
     }
 
+    /// Test transfer updates by removing the user role.
     #[concordium_test]
     fn test_transfer_update_user() {
         // Setup the context
