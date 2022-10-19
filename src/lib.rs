@@ -547,10 +547,9 @@ fn contract_transfer<S: HasStateApi>(
         );
 
         let to_address = to.address();
-        // Update the contract state
-        
+
         // Remove associated user
-        if from != to_address && !state.user_infos.get(&token_id).is_none() {
+        if from != to_address && state.user_infos.get(&token_id).is_some() {
             let user: User = state.user_of(&token_id)?;
             state.remove_user(&token_id);
 
@@ -562,6 +561,7 @@ fn contract_transfer<S: HasStateApi>(
             }))?;
         }
 
+        // Update the contract state
         state.transfer(&token_id, amount, &from, &to_address, builder)?;
 
         // Log transfer event
@@ -812,7 +812,7 @@ pub const UPDATE_USER_EVENT_TAG: u8 = u8::MAX - 5;
 
 #[derive(Debug)]
 pub enum NftEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
-    UpdateUser(UpdateUserEvent<T, A, U>)
+    UpdateUser(UpdateUserEvent<T, A, U>),
 }
 
 impl<T: IsTokenId, A: IsAddress, U: IsU64> Serial for NftEvent<T, A, U> {
@@ -830,7 +830,10 @@ impl<T: IsTokenId, A: IsAddress, U: IsU64> Deserial for NftEvent<T, A, U> {
     fn deserial<R: Read>(source: &mut R) -> ParseResult<Self> {
         let tag = source.read_u8()?;
         match tag {
-            UPDATE_USER_EVENT_TAG => UpdateUserEvent::<T, A, U>::deserial(source).map(NftEvent::UpdateUser),
+            UPDATE_USER_EVENT_TAG => {
+                UpdateUserEvent::<T, A, U>::deserial(source)
+                    .map(NftEvent::UpdateUser)
+            }
             _ => Err(ParseError::default()),
         }
     }
@@ -841,7 +844,7 @@ pub struct UpdateUserEvent<T: IsTokenId, A: IsAddress, U: IsU64> {
     /// The ID of the token being transferred.
     pub token_id: T,
     pub user: A,
-    pub expires: U, 
+    pub expires: U,
 }
 
 #[derive(Debug, Serialize, SchemaType)]
@@ -973,7 +976,6 @@ impl<T: IsTokenId> schema::SchemaType for UserOfQueryParams<T> {
     }
 }
 
-
 pub trait IsAddress: Serialize + schema::SchemaType {}
 
 impl IsAddress for User {}
@@ -1034,7 +1036,6 @@ fn contract_user_of<S: HasStateApi>(
     let result = ContractUserOfQueryResponse::from(response);
     Ok(result)
 }
-
 
 /// A query for the user of a given address for a given token.
 // Note: For the serialization to be derived according to the CIS2
@@ -1119,7 +1120,8 @@ fn contract_user_expires<S: HasStateApi>(
     host: &impl HasHost<State<S>, StateApiType = S>,
 ) -> ContractResult<ContractUserExpiresQueryResponse> {
     // Parse the parameter.
-    let params: ContractUserExpiresQueryParams = ctx.parameter_cursor().get()?;
+    let params: ContractUserExpiresQueryParams =
+        ctx.parameter_cursor().get()?;
     // Build the response.
     let mut response: Vec<u64> = Vec::with_capacity(params.queries.len());
     for query in params.queries {
@@ -1323,7 +1325,8 @@ mod tests {
         let mut host = TestHost::new(state, state_builder);
 
         // Call the contract function.
-        let result: ContractResult<()> = contract_set_user(&ctx, &mut host, &mut logger);
+        let result: ContractResult<()> =
+            contract_set_user(&ctx, &mut host, &mut logger);
         // Check the result.
         claim!(result.is_ok(), "Results in rejection");
 
@@ -1337,7 +1340,6 @@ mod tests {
 
         claim_eq!(user.address(), ADDRESS_1);
         claim_eq!(expires, 232142342);
-
 
         // Check the logs.
         claim_eq!(logger.logs.len(), 1, "Only one event should be logged");
@@ -1372,7 +1374,8 @@ mod tests {
         let mut host = TestHost::new(state, state_builder);
 
         // Call the contract function.
-        let result: ContractResult<()> = contract_set_user(&ctx, &mut host, &mut logger);
+        let result: ContractResult<()> =
+            contract_set_user(&ctx, &mut host, &mut logger);
         // Check the result.
         let err = result.expect_err_report("Expected to fail");
         claim_eq!(
@@ -1380,6 +1383,97 @@ mod tests {
             ContractError::Unauthorized,
             "Error is expected to be Unauthorized"
         );
+    }
+
+    #[concordium_test]
+    fn test_transfer_update_user() {
+        // Setup the context
+        let mut ctx = TestReceiveContext::empty();
+        ctx.set_sender(ADDRESS_0);
+
+        let mut logger = TestLogger::init();
+        let mut state_builder = TestStateBuilder::new();
+        let state = initial_state(&mut state_builder);
+        let mut host = TestHost::new(state, state_builder);
+
+        // SET USER
+        let set_user_parameter = SetUserParams {
+            token_id: TOKEN_0,
+            user: User::from_account(ACCOUNT_1),
+            expires: 232142342,
+        };
+        let set_user_parameter_bytes = to_bytes(&set_user_parameter);
+        ctx.set_parameter(&set_user_parameter_bytes);
+
+        // Call the contract function.
+        let result_1: ContractResult<()> =
+            contract_set_user(&ctx, &mut host, &mut logger);
+        // Check the result.
+        claim!(result_1.is_ok(), "SetUser results in rejection");
+
+        // Check the state.
+        let (user, expires) = host
+            .state()
+            .user_infos
+            .get(&TOKEN_0)
+            .map(|address_state| (address_state.user, address_state.expires))
+            .unwrap();
+
+        claim_eq!(user.address(), ADDRESS_1);
+        claim_eq!(expires, 232142342);
+
+        let balance0 = host
+            .state()
+            .balance(&TOKEN_0, &ADDRESS_0)
+            .expect_report("Token is expected to exist");
+        claim_eq!(balance0, 1.into(), "Incorrect amount");
+
+        let user = host
+            .state()
+            .user_of(&TOKEN_0)
+            .expect_report("Token is expected to exist");
+        claim_eq!(user.address(), ADDRESS_1, "Incorrect account");
+
+        // TRANSFER
+        let transfer = Transfer {
+            token_id: TOKEN_0,
+            amount: ContractTokenAmount::from(1),
+            from: ADDRESS_0,
+            to: Receiver::from_account(ACCOUNT_1),
+            data: AdditionalData::empty(),
+        };
+        let transfer_parameter = TransferParams::from(vec![transfer]);
+        let transfer_parameter_bytes = to_bytes(&transfer_parameter);
+        ctx.set_parameter(&transfer_parameter_bytes);
+
+        // Call the contract function.
+        let result_2: ContractResult<()> =
+            contract_transfer(&ctx, &mut host, &mut logger);
+        // Check the result.
+        claim!(result_2.is_ok(), "Transfer results in rejection");
+
+        // Check the logs.
+        claim_eq!(logger.logs.len(), 3, "Three events should be logged");
+        claim_eq!(
+            logger.logs[1],
+            to_bytes(&NftEvent::UpdateUser(UpdateUserEvent {
+                token_id: TOKEN_0,
+                user: User::from_account(ACCOUNT_1),
+                expires: 0 as u64
+            })),
+            "Incorrect event emitted"
+        );
+
+        let err = host
+            .state()
+            .user_of(&TOKEN_0)
+            .expect_err_report("Expected to fail");
+
+        claim_eq!(
+            err,
+            ContractError::Custom(CustomContractError::InvalidUserAddress),
+            "Error is expected to be InvalidUserAddress"
+        )
     }
 
     /// Test transfer succeeds, when `from` is the sender.
@@ -1436,8 +1530,6 @@ mod tests {
             1.into(),
             "Token receiver balance for token 1 should be the same as before"
         );
-
-        println!("user: {:?}", host.state().user_of(&TOKEN_0));
 
         // Check the logs.
         claim_eq!(logger.logs.len(), 1, "Only one event should be logged");
