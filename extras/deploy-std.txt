@@ -1,0 +1,18 @@
+concordium-client module deploy cis02-rentable-nft.wasm.v1 --sender samsung --name cis02-rentable-nft --grpc-ip 3.7.93.105 --grpc-port 10001 
+Using default energy amount of 101122 NRG.
+Deploy the module 'cis02-rentable-nft.wasm.v1' and name it 'cis02-rentable-nft'.
+Allowing up to 101122 NRG to be spent as transaction fee.
+Confirm [yN]: y
+y
+Deploying module...
+Enter password for credential with index 0 and signing key with index 0: 
+Transaction '4b1bcadaf93ed1d93730e25ba0c635b22fd575532519862d05efd4dc802bfa71' sent to the baker.
+Waiting for the transaction to be committed and finalized.
+You may skip this step by interrupting the command using Ctrl-C (pass flag '--no-wait' to do this by default).
+The transaction will still get processed and may be queried using
+  'concordium-client transaction status 4b1bcadaf93ed1d93730e25ba0c635b22fd575532519862d05efd4dc802bfa71'.
+[20:46:26] Waiting for the transaction to be committed.......
+Transaction is finalized into block 44bb0382581b8758f5d1dc33adc5549441ea7aa2f70c635171cc1839ec840821 with status "success" and cost 158.012181 CCD (101121 NRG).
+[20:46:36] Transaction finalized.
+Module successfully deployed with reference: 'fa154c05801ca5a230bcbe3fc38a17e7facff877d3f783f43b22f5ef41664ade'.
+Module reference fa154c05801ca5a230bcbe3fc38a17e7facff877d3f783f43b22f5ef41664ade was successfully named 'cis02-rentable-nft'.
