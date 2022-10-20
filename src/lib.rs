@@ -738,7 +738,7 @@ fn contract_view<S: HasStateApi>(
 /// It rejects if:
 /// - The sender is not the contract instance owner.
 /// - Fails to parse parameter.
-/// - Any of the tokens fails to be minted, which could be if:
+/// - Any of the tokownerens fails to be minted, which could be if:
 ///     - The minted token ID already exists.
 ///     - Fails to log Mint event
 ///     - Fails to log TokenMetadata event

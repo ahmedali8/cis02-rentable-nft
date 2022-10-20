@@ -1,0 +1,18 @@
+concordium-client contract update cis2_rentable_nft_instance --entrypoint mint --parameter-json ./extras/mint-parameter.json --schema ./extras/schema.bin --sender samsung --energy 10000 --grpc-ip 3.7.93.105 --grpc-port 10001
+Update contract 'cis2_rentable_nft' using the function 'mint' with JSON parameters from './extras/mint-parameter.json'. Sending 0.000000 CCD.
+Allowing up to 10000 NRG to be spent as transaction fee.
+Transaction expires on Thu, 20 Oct 2022 17:19:46 UTC.
+Confirm [yN]: y
+y
+Enter password for credential with index 0 and signing key with index 0: 
+Transaction '21966e4f02f2196cfb49ae6827275dd3e965f20e8934808bb7442819e8519397' sent to the baker.
+Waiting for the transaction to be committed and finalized.
+You may skip this step by interrupting the command using Ctrl-C (pass flag '--no-wait' to do this by default).
+The transaction will still get processed and may be queried using
+  'concordium-client transaction status 21966e4f02f2196cfb49ae6827275dd3e965f20e8934808bb7442819e8519397'.
+[22:09:51] Waiting for the transaction to be committed......
+Transaction is committed into block c0de778e0c1d630c9b8071e4403156d1aa46a6d50413dde6348806940a7fe444 with status "success" and cost 4.758866 CCD (3051 NRG).
+[22:09:58] Waiting for the transaction to be finalized....
+Transaction is finalized into block c0de778e0c1d630c9b8071e4403156d1aa46a6d50413dde6348806940a7fe444 with status "success" and cost 4.758866 CCD (3051 NRG).
+[22:10:04] Transaction finalized.
+Successfully updated contract instance {"index":1508,"subindex":0} ('cis2_rentable_nft_instance') using the function 'mint'.

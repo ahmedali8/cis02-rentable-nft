@@ -1,0 +1,19 @@
+concordium-client contract init cis02-rentable-nft --sender samsung --contract cis2_rentable_nft --name cis2_rentable_nft_instance --energy 10000 --grpc-ip 3.7.93.105 --grpc-port 10001
+Initialize contract 'cis2_rentable_nft' from module 'fa154c05801ca5a230bcbe3fc38a17e7facff877d3f783f43b22f5ef41664ade' with no parameters. Sending 0.000000 CCD.
+Allowing up to 10000 NRG to be spent as transaction fee.
+Transaction expires on Thu, 20 Oct 2022 16:46:48 UTC.
+Confirm [yN]: y
+y
+Enter password for credential with index 0 and signing key with index 0: 
+Transaction '8f39bba84db5520488ec2747867ea69b83f54eb58aaa5f47831f2fc1557c24ce' sent to the baker.
+Waiting for the transaction to be committed and finalized.
+You may skip this step by interrupting the command using Ctrl-C (pass flag '--no-wait' to do this by default).
+The transaction will still get processed and may be queried using
+  'concordium-client transaction status 8f39bba84db5520488ec2747867ea69b83f54eb58aaa5f47831f2fc1557c24ce'.
+[21:36:55] Waiting for the transaction to be committed........
+Transaction is committed into block 4be81c66f8942bf582dc98353ef1b498218c39dc371410a7cc1b9eb55e0fa65c with status "success" and cost 4.252840 CCD (2723 NRG).
+[21:37:07] Waiting for the transaction to be finalized....
+Transaction is finalized into block 4be81c66f8942bf582dc98353ef1b498218c39dc371410a7cc1b9eb55e0fa65c with status "success" and cost 4.252840 CCD (2723 NRG).
+[21:37:12] Transaction finalized.
+Contract successfully initialized with address: {"index":1508,"subindex":0}
+Contract address {"index":1508,"subindex":0} was successfully named 'cis2_rentable_nft_instance'.
